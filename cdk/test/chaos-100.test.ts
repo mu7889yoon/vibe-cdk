@@ -15,7 +15,7 @@ describe('Chaos100Stack', () => {
 
   test('Step Functions State Machine Created', () => {
     template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
-      Comment: 'Bedrockを使用してカオスエンジニアリングシナリオを生成するState Machine',
+      Comment: 'Bedrockを使用してカオスエンジニアリングシナリオを生成し、CloudFormationデプロイまで実行するState Machine',
     });
   });
 
@@ -37,8 +37,17 @@ describe('Chaos100Stack', () => {
     });
   });
 
-  test('Two Lambda Functions Created', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 2);
+  test('Deployer Lambda Function Created', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Runtime: 'python3.9',
+      Handler: 'handler.lambda_handler',
+      Timeout: 1800, // 30分
+      MemorySize: 512,
+    });
+  });
+
+  test('Three Lambda Functions Created', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 3);
   });
 
   test('S3 Bucket Created', () => {
@@ -104,6 +113,42 @@ describe('Chaos100Stack', () => {
         Statement: [
           {
             Action: ['cloudformation:DescribeStacks', 'cloudformation:ListStacks'],
+            Effect: 'Allow',
+            Resource: '*',
+          },
+        ],
+      },
+    });
+  });
+
+  test('Deployer IAM Role has CloudFormation deploy permissions', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: [
+              'cloudformation:CreateStack',
+              'cloudformation:UpdateStack',
+              'cloudformation:DeleteStack',
+              'cloudformation:DescribeStacks',
+              'cloudformation:DescribeStackEvents',
+              'cloudformation:DescribeStackResources',
+              'cloudformation:ValidateTemplate',
+              'cloudformation:ListStacks',
+            ],
+            Effect: 'Allow',
+          },
+        ],
+      },
+    });
+  });
+
+  test('Deployer IAM Role has FIS permissions', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: ['fis:*'],
             Effect: 'Allow',
             Resource: '*',
           },
