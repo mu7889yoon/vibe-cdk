@@ -16,6 +16,7 @@ export class StepFunctionScenarioGen extends Construct {
   public readonly stateMachine: stepfunctions.StateMachine;
   public readonly scenarioGeneratorLambda: lambda.Function;
   public readonly scenarioAnalyzerLambda: lambda.Function;
+  public readonly deployerLambda: lambda.Function;
   public readonly templateBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props?: StepFunctionScenarioGenProps) {
@@ -137,6 +138,99 @@ export class StepFunctionScenarioGen extends Construct {
       },
     });
 
+    // Deployer Lambda 関数の IAM ロール
+    const deployerRole = new iam.Role(this, 'DeployerRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // S3 読み取り権限
+    deployerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          's3:GetObject',
+          's3:ListBucket',
+        ],
+        resources: [
+          this.templateBucket.bucketArn,
+          `${this.templateBucket.bucketArn}/*`,
+        ],
+      })
+    );
+
+    // CloudFormation デプロイ権限
+    deployerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'cloudformation:CreateStack',
+          'cloudformation:UpdateStack',
+          'cloudformation:DeleteStack',
+          'cloudformation:DescribeStacks',
+          'cloudformation:DescribeStackEvents',
+          'cloudformation:DescribeStackResources',
+          'cloudformation:ValidateTemplate',
+          'cloudformation:ListStacks',
+        ],
+        resources: [
+          `arn:aws:cloudformation:*:${cdk.Aws.ACCOUNT_ID}:stack/chaos-engineering-*/*`,
+        ],
+      })
+    );
+
+    // FIS 関連の権限
+    deployerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'fis:*',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // IAM PassRole 権限（FIS実行ロール用）
+    deployerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'iam:PassRole',
+        ],
+        resources: [
+          `arn:aws:iam::${cdk.Aws.ACCOUNT_ID}:role/chaos-engineering-*`,
+        ],
+      })
+    );
+
+    // EC2, ECS, Lambda 関連の権限（FIS実験対象）
+    deployerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'ec2:*',
+          'ecs:*',
+          'lambda:*',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // Deployer Lambda 関数の作成
+    this.deployerLambda = new lambda.Function(this, 'DeployerLambda', {
+      runtime: lambda.Runtime.PYTHON_3_9,
+      handler: 'handler.lambda_handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambdas/deployer')),
+      timeout: cdk.Duration.minutes(30), // CloudFormation デプロイは時間がかかる可能性があるため
+      memorySize: 512,
+      role: deployerRole,
+      environment: {
+        BUCKET_NAME: this.templateBucket.bucketName,
+      },
+    });
+
     // Step Functions State Machineの定義
     const scenarioGeneratorTask = new stepfunctionsTasks.LambdaInvoke(this, 'InvokeScenarioGenerator', {
       lambdaFunction: this.scenarioGeneratorLambda,
@@ -155,6 +249,19 @@ export class StepFunctionScenarioGen extends Construct {
       payload: stepfunctions.TaskInput.fromObject({
         'scenario.$': '$.scenario',
         'bucket_name': this.templateBucket.bucketName,
+      }),
+      retryOnServiceExceptions: true,
+    });
+
+    // Deployer タスクの定義
+    const deployerTask = new stepfunctionsTasks.LambdaInvoke(this, 'InvokeDeployer', {
+      lambdaFunction: this.deployerLambda,
+      outputPath: '$.Payload',
+      payload: stepfunctions.TaskInput.fromObject({
+        'bucket_name': this.templateBucket.bucketName,
+        'codegen_key': 'codegen-output/cloudformation-template.json',
+        'stack_name.$': '$.stack_name',
+        'parameters.$': '$.parameters',
       }),
       retryOnServiceExceptions: true,
     });
@@ -185,6 +292,13 @@ export class StepFunctionScenarioGen extends Construct {
       backoffRate: 2.0,
     });
 
+    deployerTask.addRetry({
+      errors: ['Lambda.ServiceException', 'Lambda.AWSLambdaException', 'Lambda.SdkClientException'],
+      interval: cdk.Duration.seconds(10),
+      maxAttempts: 2,
+      backoffRate: 2.0,
+    });
+
     // Catch設定
     scenarioGeneratorTask.addCatch(failState, {
       errors: ['States.TaskFailed'],
@@ -196,16 +310,22 @@ export class StepFunctionScenarioGen extends Construct {
       resultPath: '$.errorInfo',
     });
 
-    // State Machineの定義（シナリオ生成 → 分析 → 成功）
+    deployerTask.addCatch(failState, {
+      errors: ['States.TaskFailed'],
+      resultPath: '$.errorInfo',
+    });
+
+    // State Machineの定義（シナリオ生成 → 分析 → デプロイ → 成功）
     const definition = scenarioGeneratorTask
       .next(scenarioAnalyzerTask)
+      .next(deployerTask)
       .next(successState);
 
     // State Machineの作成
     this.stateMachine = new stepfunctions.StateMachine(this, 'ScenarioGeneratorStateMachine', {
       definition,
-      timeout: cdk.Duration.minutes(10),
-      comment: 'Bedrockを使用してカオスエンジニアリングシナリオを生成するState Machine',
+      timeout: cdk.Duration.minutes(45), // CloudFormationデプロイ時間を考慮
+      comment: 'Bedrockを使用してカオスエンジニアリングシナリオを生成し、CloudFormationデプロイまで実行するState Machine',
     });
 
     // アウトプット
@@ -222,6 +342,11 @@ export class StepFunctionScenarioGen extends Construct {
     new cdk.CfnOutput(this, 'ScenarioAnalyzerLambdaArn', {
       value: this.scenarioAnalyzerLambda.functionArn,
       description: 'Scenario Analyzer Lambda Function ARN',
+    });
+
+    new cdk.CfnOutput(this, 'DeployerLambdaArn', {
+      value: this.deployerLambda.functionArn,
+      description: 'Deployer Lambda Function ARN',
     });
 
     new cdk.CfnOutput(this, 'TemplateBucketName', {
