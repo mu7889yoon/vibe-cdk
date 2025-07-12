@@ -1,16 +1,30 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { StepFunctionScenarioGen } from './constructs/stepfunction-scenario-gen';
 
 export class Chaos100Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // The code that defines your stack goes here
+    // Bedrock シナリオ生成システムの作成
+    const scenarioGenerator = new StepFunctionScenarioGen(this, 'ScenarioGenerator', {
+      bucketName: `chaos-100-templates-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+    });
 
-    // example resource
-    // const queue = new sqs.Queue(this, 'Chaos100Queue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
+    // アウトプット
+    new cdk.CfnOutput(this, 'ScenarioGeneratorStateMachineArn', {
+      value: scenarioGenerator.stateMachine.stateMachineArn,
+      description: 'Scenario Generator State Machine ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ScenarioGeneratorLambdaArn', {
+      value: scenarioGenerator.scenarioGeneratorLambda.functionArn,
+      description: 'Scenario Generator Lambda Function ARN',
+    });
+
+    new cdk.CfnOutput(this, 'TemplateBucketName', {
+      value: scenarioGenerator.templateBucket.bucketName,
+      description: 'Template S3 Bucket Name',
+    });
   }
 }
