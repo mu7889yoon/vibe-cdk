@@ -15,6 +15,7 @@ export interface StepFunctionScenarioGenProps extends cdk.StackProps {
 export class StepFunctionScenarioGen extends Construct {
   public readonly stateMachine: stepfunctions.StateMachine;
   public readonly scenarioGeneratorLambda: lambda.Function;
+  public readonly scenarioAnalyzerLambda: lambda.Function;
   public readonly templateBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props?: StepFunctionScenarioGenProps) {
@@ -87,6 +88,55 @@ export class StepFunctionScenarioGen extends Construct {
       },
     });
 
+    // Scenario Analyzer Lambda 関数の IAM ロール
+    const scenarioAnalyzerRole = new iam.Role(this, 'ScenarioAnalyzerRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // S3 読み取り・書き込み権限
+    scenarioAnalyzerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          's3:GetObject',
+          's3:PutObject',
+          's3:ListBucket',
+        ],
+        resources: [
+          this.templateBucket.bucketArn,
+          `${this.templateBucket.bucketArn}/*`,
+        ],
+      })
+    );
+
+    // CloudFormation 読み取り権限（必要に応じて）
+    scenarioAnalyzerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'cloudformation:DescribeStacks',
+          'cloudformation:ListStacks',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // Scenario Analyzer Lambda 関数の作成
+    this.scenarioAnalyzerLambda = new lambda.Function(this, 'ScenarioAnalyzerLambda', {
+      runtime: lambda.Runtime.PYTHON_3_9,
+      handler: 'handler.lambda_handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambdas/scenario-analyzer')),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      role: scenarioAnalyzerRole,
+      environment: {
+        BUCKET_NAME: this.templateBucket.bucketName,
+      },
+    });
+
     // Step Functions State Machineの定義
     const scenarioGeneratorTask = new stepfunctionsTasks.LambdaInvoke(this, 'InvokeScenarioGenerator', {
       lambdaFunction: this.scenarioGeneratorLambda,
@@ -98,19 +148,37 @@ export class StepFunctionScenarioGen extends Construct {
       retryOnServiceExceptions: true,
     });
 
+    // Scenario Analyzer タスクの定義
+    const scenarioAnalyzerTask = new stepfunctionsTasks.LambdaInvoke(this, 'InvokeScenarioAnalyzer', {
+      lambdaFunction: this.scenarioAnalyzerLambda,
+      outputPath: '$.Payload',
+      payload: stepfunctions.TaskInput.fromObject({
+        'scenario.$': '$.scenario',
+        'bucket_name': this.templateBucket.bucketName,
+      }),
+      retryOnServiceExceptions: true,
+    });
+
     // 成功処理
-    const successState = new stepfunctions.Succeed(this, 'ScenarioGenerationSuccess', {
-      comment: 'シナリオ生成が成功しました',
+    const successState = new stepfunctions.Succeed(this, 'ScenarioAnalysisSuccess', {
+      comment: 'シナリオ生成と分析が成功しました',
     });
 
     // 失敗処理
-    const failState = new stepfunctions.Fail(this, 'ScenarioGenerationFailed', {
-      comment: 'シナリオ生成が失敗しました',
+    const failState = new stepfunctions.Fail(this, 'ScenarioProcessingFailed', {
+      comment: 'シナリオ生成または分析が失敗しました',
       cause: 'Lambda function failed or timed out',
     });
 
     // リトライ設定
     scenarioGeneratorTask.addRetry({
+      errors: ['Lambda.ServiceException', 'Lambda.AWSLambdaException', 'Lambda.SdkClientException'],
+      interval: cdk.Duration.seconds(5),
+      maxAttempts: 3,
+      backoffRate: 2.0,
+    });
+
+    scenarioAnalyzerTask.addRetry({
       errors: ['Lambda.ServiceException', 'Lambda.AWSLambdaException', 'Lambda.SdkClientException'],
       interval: cdk.Duration.seconds(5),
       maxAttempts: 3,
@@ -123,8 +191,15 @@ export class StepFunctionScenarioGen extends Construct {
       resultPath: '$.errorInfo',
     });
 
-    // State Machineの定義
-    const definition = scenarioGeneratorTask.next(successState);
+    scenarioAnalyzerTask.addCatch(failState, {
+      errors: ['States.TaskFailed'],
+      resultPath: '$.errorInfo',
+    });
+
+    // State Machineの定義（シナリオ生成 → 分析 → 成功）
+    const definition = scenarioGeneratorTask
+      .next(scenarioAnalyzerTask)
+      .next(successState);
 
     // State Machineの作成
     this.stateMachine = new stepfunctions.StateMachine(this, 'ScenarioGeneratorStateMachine', {
@@ -139,9 +214,14 @@ export class StepFunctionScenarioGen extends Construct {
       description: 'Scenario Generator State Machine ARN',
     });
 
-    new cdk.CfnOutput(this, 'LambdaFunctionArn', {
+    new cdk.CfnOutput(this, 'ScenarioGeneratorLambdaArn', {
       value: this.scenarioGeneratorLambda.functionArn,
       description: 'Scenario Generator Lambda Function ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ScenarioAnalyzerLambdaArn', {
+      value: this.scenarioAnalyzerLambda.functionArn,
+      description: 'Scenario Analyzer Lambda Function ARN',
     });
 
     new cdk.CfnOutput(this, 'TemplateBucketName', {

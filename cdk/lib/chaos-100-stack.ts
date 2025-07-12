@@ -22,6 +22,11 @@ export class Chaos100Stack extends cdk.Stack {
       description: 'Scenario Generator Lambda Function ARN',
     });
 
+    new cdk.CfnOutput(this, 'ScenarioAnalyzerLambdaArn', {
+      value: scenarioGenerator.scenarioAnalyzerLambda.functionArn,
+      description: 'Scenario Analyzer Lambda Function ARN',
+    });
+
     new cdk.CfnOutput(this, 'TemplateBucketName', {
       value: scenarioGenerator.templateBucket.bucketName,
       description: 'Template S3 Bucket Name',
