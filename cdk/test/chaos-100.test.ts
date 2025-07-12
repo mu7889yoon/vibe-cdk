@@ -19,13 +19,26 @@ describe('Chaos100Stack', () => {
     });
   });
 
-  test('Lambda Function Created', () => {
+  test('Scenario Generator Lambda Function Created', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Runtime: 'python3.9',
       Handler: 'handler.lambda_handler',
       Timeout: 300,
       MemorySize: 512,
     });
+  });
+
+  test('Scenario Analyzer Lambda Function Created', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Runtime: 'python3.9',
+      Handler: 'handler.lambda_handler',
+      Timeout: 300,
+      MemorySize: 512,
+    });
+  });
+
+  test('Two Lambda Functions Created', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 2);
   });
 
   test('S3 Bucket Created', () => {
@@ -66,6 +79,33 @@ describe('Chaos100Stack', () => {
           {
             Action: ['s3:GetObject', 's3:ListBucket'],
             Effect: 'Allow',
+          },
+        ],
+      },
+    });
+  });
+
+  test('Scenario Analyzer IAM Role has S3 read/write permissions', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
+            Effect: 'Allow',
+          },
+        ],
+      },
+    });
+  });
+
+  test('Scenario Analyzer IAM Role has CloudFormation permissions', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: [
+          {
+            Action: ['cloudformation:DescribeStacks', 'cloudformation:ListStacks'],
+            Effect: 'Allow',
+            Resource: '*',
           },
         ],
       },
