@@ -26,7 +26,7 @@ AWS CDKを使用したChaos Engineeringプラットフォームです。Bedrock�
 
 ### インフラストラクチャ
 
-![構成図](/docs/構成図.drawio.png)
+![構成図](/docs/構成図.png)
 
 
 ## 🚀 クイックスタート
