@@ -1,4 +1,4 @@
-# Chaos Engineering Platform
+# Chaos Engineering Knock
 
 AWS CDKを使用したChaos Engineeringプラットフォームです。Bedrockによるシナリオ生成からFIS実行まで、エンドツーエンドの自動化を提供します。
 
