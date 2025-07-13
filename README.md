@@ -235,7 +235,3 @@ aws logs tail /aws/apigateway/[api-id] --follow
 3. Commit your changes
 4. Push to the branch
 5. Create a Pull Request
-
-## 📄 ライセンス
-
-MIT License
